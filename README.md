@@ -22,29 +22,46 @@ waiting, and lets you approve or deny right from the device.
 
 ## Hardware
 
-The firmware targets ESP32 with the Arduino framework. As written, it
-depends on the M5StickCPlus library for its display, IMU, and button
-drivers—so you'll need that board, or a fork that swaps those drivers for
-your own pin layout.
+This fork targets the **[Pimoroni Tufty 2350](https://shop.pimoroni.com/products/tufty-2350)**
+(RP2350B + RM2 wireless module, 320×240 IPS LCD, 5 buttons, 4-zone case LEDs).
+The original M5StickC Plus firmware lives in git history on `main` before
+the Tufty port commits.
+
+## Building
+
+You'll need three repos on disk and three env vars pointing at them:
+
+| Env var | Repo |
+| --- | --- |
+| `PICO_SDK_PATH` | <https://github.com/raspberrypi/pico-sdk> (2.0+) |
+| `PIMORONI_PICO_PATH` | <https://github.com/pimoroni/pimoroni-pico> |
+| `PIMORONI_TUFTY2350_PATH` | <https://github.com/pimoroni/tufty2350> |
+
+Plus a build toolchain:
+
+- **CMake 3.13+** and **Ninja**
+- **ARM GCC** (`arm-none-eabi-gcc`) for the target
+- A **host C++ compiler** — pico-sdk builds `pioasm` and `picotool` from
+  source as native binaries during configure. On Windows, MinGW-w64 (e.g.
+  WinLibs UCRT) is the standard choice.
+- **Python 3** (Pillow only needed if you're using `tools/prep_character.py`)
+
+Configure and build:
+
+```sh
+cmake -S . -B build -G Ninja
+ninja -C build
+```
+
+Outputs land in `build/claude_buddy.uf2` (drag-to-flash) plus the usual
+`.elf`/`.bin`/`.hex` companions.
 
 ## Flashing
 
-Install
-[PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
-then:
-
-```bash
-pio run -t upload
-```
-
-If you're starting from a previously-flashed device, wipe it first:
-
-```bash
-pio run -t erase && pio run -t upload
-```
-
-Once running, you can also wipe everything from the device itself: **hold A
-→ settings → reset → factory reset → tap twice**.
+Hold the **BOOT** button on the back of the Tufty while plugging it into
+USB. It mounts as a USB drive (`RP2350` or similar). Drag
+`build/claude_buddy.uf2` onto the drive; the Tufty reboots automatically
+into the new firmware.
 
 ## Pairing
 
