@@ -6,6 +6,7 @@
 #include "pico/stdlib.h"
 #include "ble_bridge.h"
 #include "rtc.h"
+#include "settings.h"
 #include "lib/ArduinoJson.h"
 
 namespace {
@@ -31,9 +32,33 @@ void copy_str(char (&dst)[N], T src) {
 
 // Apply a single JSON line to TamaState. Returns true if the line was a
 // valid object we recognized (caller uses this to refresh lastUpdated).
+void send_ack(const char* cmd, bool ok) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "{\"ack\":\"%s\",\"ok\":%s}\n",
+                     cmd, ok ? "true" : "false");
+    if (n > 0) bleWrite((const uint8_t*)buf, (size_t)n);
+}
+
 bool apply_json(const char* line, TamaState* out) {
     JsonDocument doc;
     if (deserializeJson(doc, line)) return false;
+
+    // Command dispatch — `cmd` field expects a matching ack per REFERENCE.md.
+    if (const char* cmd = doc["cmd"]) {
+        if (std::strcmp(cmd, "owner") == 0) {
+            const char* name = doc["name"];
+            if (name && *name) {
+                settingsSetOwner(name);
+                settingsSave();
+            }
+            send_ack("owner", true);
+            return true;
+        }
+        // Unknown command — ack with ok:false so the desktop knows we got it
+        // but couldn't handle it. Avoids the desktop's timeout-retry loop.
+        send_ack(cmd, false);
+        return true;
+    }
 
     // Time-sync message: {"time":[epoch_sec, tz_offset_sec]}. One-shot per
     // connection from the desktop; no other fields, so handle separately.

@@ -11,6 +11,7 @@
 #include "data.h"
 #include "power.h"
 #include "rtc.h"
+#include "settings.h"
 
 // Pimoroni's tufty2350 board header pins PICO_PANIC_FUNCTION at mp_pico_panic
 // because the upstream copy is the MicroPython board definition. We're not
@@ -65,6 +66,7 @@ int main() {
     powerInit();
     batteryInit();
     rtcInit();             // depends on POWER_EN; must come after power_en_high()
+    settingsInit();        // load owner name etc. from flash
 
     // Bring BLE up before the LCD so first-frame draw can already show state.
     bleInit("Claude");
@@ -131,9 +133,14 @@ int main() {
         g.clear();
         g.set_font("bitmap8");
 
-        // Title + link/data state along the top
+        // Title + link/data state along the top. Once the desktop has sent
+        // {"cmd":"owner","name":"..."} the title personalises to "<X>'s Buddy".
         g.set_pen(ACCENT);
-        g.text("Claude Buddy", Point(12, 10), W, 3);
+        char title_buf[64];
+        const char* owner = settings().owner;
+        if (owner[0]) snprintf(title_buf, sizeof(title_buf), "%s's Buddy", owner);
+        else          snprintf(title_buf, sizeof(title_buf), "Claude Buddy");
+        g.text(title_buf, Point(12, 10), W, 3);
 
         // BLE link state (top-right)
         const char* hci = bleHciState();

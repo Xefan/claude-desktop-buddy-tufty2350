@@ -72,6 +72,7 @@ add_executable(claude_buddy
     src/data.cpp
     src/power.cpp
     src/rtc.cpp
+    src/settings.cpp
     src/drivers/st7789/st7789.cpp
 )
 
@@ -99,12 +100,14 @@ target_compile_definitions(claude_buddy PRIVATE
 target_link_libraries(claude_buddy
     pico_stdlib
     hardware_adc
+    hardware_flash
     hardware_i2c
     hardware_pwm
     hardware_pio
     hardware_dma
     hardware_sleep
     hardware_watchdog
+    pico_flash
     pico_graphics
     pimoroni_i2c
     pcf85063a
