@@ -205,15 +205,26 @@ int main() {
 
         lcd.update();
 
-        // 4-zone case-LED chase heartbeat.
-        uint active = (tick / 30) % 4;
-        for (uint i = 0; i < 4; i++) {
-            uint dist = (i + 4 - active) % 4;
-            uint16_t level = dist == 0 ? 0xC000
-                           : dist == 1 ? 0x3000
-                           : dist == 2 ? 0x0800
-                                       : 0x0200;
-            pwm_set_gpio_level(tufty::CASE_LEDS[i], level);
+        // Case LEDs:
+        //   Pending unanswered prompt → all four pulse in sync at ~2Hz.
+        //   Otherwise                 → subtle chase as "I'm alive" heartbeat.
+        bool attention = tama.promptId[0] && !responded;
+        if (attention) {
+            // Triangle wave 0..0xFFFF..0 over 30 frames (~2Hz at 60fps).
+            int phase = tick % 30;
+            int amp = phase < 15 ? phase : 30 - phase;
+            uint16_t level = (uint16_t)((amp * 0xFFFF) / 15);
+            for (uint i = 0; i < 4; i++) pwm_set_gpio_level(tufty::CASE_LEDS[i], level);
+        } else {
+            uint active = (tick / 30) % 4;
+            for (uint i = 0; i < 4; i++) {
+                uint dist = (i + 4 - active) % 4;
+                uint16_t level = dist == 0 ? 0xC000
+                               : dist == 1 ? 0x3000
+                               : dist == 2 ? 0x0800
+                                           : 0x0200;
+                pwm_set_gpio_level(tufty::CASE_LEDS[i], level);
+            }
         }
 
         tick++;
