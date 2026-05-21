@@ -10,6 +10,7 @@
 #include "buttons.h"
 #include "data.h"
 #include "power.h"
+#include "rtc.h"
 
 // Pimoroni's tufty2350 board header pins PICO_PANIC_FUNCTION at mp_pico_panic
 // because the upstream copy is the MicroPython board definition. We're not
@@ -58,10 +59,12 @@ static int rgb_pen(PicoGraphics_PenRGB888& g, uint8_t r, uint8_t g_, uint8_t b) 
 int main() {
     stdio_init_all();
     power_en_high();
+    sleep_ms(50);          // give the I2C peripherals' rail a moment to stabilize
     init_case_leds();
     buttonsInit();
     powerInit();
     batteryInit();
+    rtcInit();             // depends on POWER_EN; must come after power_en_high()
 
     // Bring BLE up before the LCD so first-frame draw can already show state.
     bleInit("Claude");
@@ -152,6 +155,15 @@ int main() {
                                 : DIM;
         g.set_pen(pwr_pen);
         g.text(pwr, Point(W - 110, 32), W, 2);
+
+        // Clock (only shown once the desktop has time-synced us).
+        RtcNow t;
+        if (rtcRead(&t)) {
+            char clock_buf[8];
+            snprintf(clock_buf, sizeof(clock_buf), "%02d:%02d", t.hour, t.min);
+            g.set_pen(DIM);
+            g.text(clock_buf, Point(W - 110, 50), W, 2);
+        }
 
         // Session counts row
         char buf[80];

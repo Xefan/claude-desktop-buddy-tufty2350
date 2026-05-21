@@ -5,6 +5,7 @@
 
 #include "pico/stdlib.h"
 #include "ble_bridge.h"
+#include "rtc.h"
 #include "lib/ArduinoJson.h"
 
 namespace {
@@ -33,6 +34,15 @@ void copy_str(char (&dst)[N], T src) {
 bool apply_json(const char* line, TamaState* out) {
     JsonDocument doc;
     if (deserializeJson(doc, line)) return false;
+
+    // Time-sync message: {"time":[epoch_sec, tz_offset_sec]}. One-shot per
+    // connection from the desktop; no other fields, so handle separately.
+    if (JsonArrayConst ta = doc["time"].as<JsonArrayConst>()) {
+        if (ta.size() == 2) {
+            rtcSetEpoch(ta[0].as<uint32_t>(), ta[1].as<int32_t>());
+            return true;
+        }
+    }
 
     // Heartbeat snapshot: fields all optional, only update what's present.
     // `|` is ArduinoJson's "value or default" — keeps current value if missing.

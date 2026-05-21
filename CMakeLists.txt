@@ -54,6 +54,8 @@ include_directories("${PIMORONI_PICO_PATH}")
 include("${PIMORONI_PICO_PATH}/libraries/bitmap_fonts/bitmap_fonts.cmake")
 include("${PIMORONI_PICO_PATH}/libraries/hershey_fonts/hershey_fonts.cmake")
 include("${PIMORONI_PICO_PATH}/libraries/pico_graphics/pico_graphics.cmake")
+include("${PIMORONI_PICO_PATH}/common/pimoroni_i2c.cmake")
+include("${PIMORONI_PICO_PATH}/drivers/pcf85063a/pcf85063a.cmake")
 
 # --- Firmware target ---
 # The Tufty 2350's ST7789 panel has a different controller variant than the
@@ -69,6 +71,7 @@ add_executable(claude_buddy
     src/buttons.cpp
     src/data.cpp
     src/power.cpp
+    src/rtc.cpp
     src/drivers/st7789/st7789.cpp
 )
 
@@ -96,12 +99,15 @@ target_compile_definitions(claude_buddy PRIVATE
 target_link_libraries(claude_buddy
     pico_stdlib
     hardware_adc
+    hardware_i2c
     hardware_pwm
     hardware_pio
     hardware_dma
     hardware_sleep
     hardware_watchdog
     pico_graphics
+    pimoroni_i2c
+    pcf85063a
     pico_cyw43_arch_threadsafe_background
     pico_btstack_ble
     pico_btstack_cyw43
