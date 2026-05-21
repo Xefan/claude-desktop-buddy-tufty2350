@@ -5,9 +5,11 @@
 
 #include "st7789.hpp"
 #include "libraries/pico_graphics/pico_graphics.hpp"
+#include "battery.h"
 #include "ble_bridge.h"
 #include "buttons.h"
 #include "data.h"
+#include "power.h"
 
 // Pimoroni's tufty2350 board header pins PICO_PANIC_FUNCTION at mp_pico_panic
 // because the upstream copy is the MicroPython board definition. We're not
@@ -58,6 +60,8 @@ int main() {
     power_en_high();
     init_case_leds();
     buttonsInit();
+    powerInit();
+    batteryInit();
 
     // Bring BLE up before the LCD so first-frame draw can already show state.
     bleInit("Claude");
@@ -91,6 +95,7 @@ int main() {
     uint32_t tick = 0;
     while (true) {
         buttonsUpdate();
+        powerUpdate();        // long-press RESET → dormant sleep (no return)
         dataPoll(&tama);
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
@@ -134,6 +139,19 @@ int main() {
         const char* link_label = linked ? "linked" : working ? "advertising" : hci;
         g.set_pen(linked ? OK : working ? WARN : HOT);
         g.text(link_label, Point(W - 110, 14), W, 2);
+
+        // Power state below the BLE label: "USB" when plugged in, else "NN%".
+        bool on_usb = batteryOnUsb();
+        char pwr[16];
+        if (on_usb) snprintf(pwr, sizeof(pwr), "USB");
+        else        snprintf(pwr, sizeof(pwr), "%d%%", batteryPercent());
+        int  pct = batteryPercent();
+        int  pwr_pen = on_usb ? OK
+                     : pct < 15 ? HOT
+                     : pct < 30 ? WARN
+                                : DIM;
+        g.set_pen(pwr_pen);
+        g.text(pwr, Point(W - 110, 32), W, 2);
 
         // Session counts row
         char buf[80];

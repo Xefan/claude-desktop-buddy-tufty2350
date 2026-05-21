@@ -2,11 +2,17 @@ cmake_minimum_required(VERSION 3.13)
 
 # --- External paths via env vars (matches pico-sdk's PICO_SDK_PATH convention) ---
 #
-# Three repos must be checked out somewhere, with env vars pointing at them:
+# Four repos must be checked out somewhere, with env vars pointing at them:
 #   PICO_SDK_PATH            -> github.com/raspberrypi/pico-sdk (2.0+)
+#   PICO_EXTRAS_PATH         -> github.com/raspberrypi/pico-extras (for pico_sleep)
 #   PIMORONI_PICO_PATH       -> github.com/pimoroni/pimoroni-pico
 #   PIMORONI_TUFTY2350_PATH  -> github.com/pimoroni/tufty2350  (board header lives here)
 
+if(NOT DEFINED ENV{PICO_EXTRAS_PATH})
+    message(FATAL_ERROR
+        "PICO_EXTRAS_PATH is not set.\n"
+        "Clone https://github.com/raspberrypi/pico-extras and set the env var to its path.")
+endif()
 if(NOT DEFINED ENV{PIMORONI_PICO_PATH})
     message(FATAL_ERROR
         "PIMORONI_PICO_PATH is not set.\n"
@@ -32,6 +38,7 @@ set(PICO_BOARD pimoroni_tufty2350 CACHE STRING "Pico board")
 list(APPEND PICO_BOARD_HEADER_DIRS "${PIMORONI_TUFTY2350_PATH}/board")
 
 include(pico_sdk_import.cmake)
+include(pico_extras_import.cmake)
 
 project(claude_buddy C CXX ASM)
 set(CMAKE_C_STANDARD 11)
@@ -57,9 +64,11 @@ include("${PIMORONI_PICO_PATH}/libraries/pico_graphics/pico_graphics.cmake")
 # upstream pointer + the small MicroPython-glue strip).
 add_executable(claude_buddy
     src/main.cpp
+    src/battery.cpp
     src/ble_bridge.cpp
     src/buttons.cpp
     src/data.cpp
+    src/power.cpp
     src/drivers/st7789/st7789.cpp
 )
 
@@ -86,9 +95,12 @@ target_compile_definitions(claude_buddy PRIVATE
 
 target_link_libraries(claude_buddy
     pico_stdlib
+    hardware_adc
     hardware_pwm
     hardware_pio
     hardware_dma
+    hardware_sleep
+    hardware_watchdog
     pico_graphics
     pico_cyw43_arch_threadsafe_background
     pico_btstack_ble
