@@ -59,6 +59,7 @@ add_executable(claude_buddy
     src/main.cpp
     src/ble_bridge.cpp
     src/buttons.cpp
+    src/data.cpp
     src/drivers/st7789/st7789.cpp
 )
 

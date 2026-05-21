@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstring>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 
@@ -6,6 +7,7 @@
 #include "libraries/pico_graphics/pico_graphics.hpp"
 #include "ble_bridge.h"
 #include "buttons.h"
+#include "data.h"
 
 // Pimoroni's tufty2350 board header pins PICO_PANIC_FUNCTION at mp_pico_panic
 // because the upstream copy is the MicroPython board definition. We're not
@@ -72,37 +74,111 @@ int main() {
     int ACCENT = rgb_pen(g, 0xFA, 0x70, 0x20);
     int TEXT   = rgb_pen(g, 0xFF, 0xFF, 0xFF);
     int DIM    = rgb_pen(g, 0x60, 0x60, 0x70);
+    int OK     = rgb_pen(g, 0x40, 0xE0, 0x60);
+    int WARN   = rgb_pen(g, 0xFA, 0xC0, 0x40);
+    int HOT    = rgb_pen(g, 0xE0, 0x40, 0x40);
+
+    TamaState tama;
+    dataInit(&tama);
+
+    // Permission-prompt state. promptId is what we last saw; when it changes
+    // we reset the "already responded" latch so the new prompt is fresh.
+    char prompt_id_seen[40] = "";
+    bool responded = false;
+    const char* response_label = "";   // "approved" / "denied" briefly after sending
+    uint32_t responded_at_ms = 0;
 
     uint32_t tick = 0;
     while (true) {
         buttonsUpdate();
+        dataPoll(&tama);
+        uint32_t now = to_ms_since_boot(get_absolute_time());
+
+        // Reset response latch when the prompt id changes (new prompt arrived,
+        // or the old one was cleared by a heartbeat without `prompt`).
+        if (strcmp(tama.promptId, prompt_id_seen) != 0) {
+            std::strncpy(prompt_id_seen, tama.promptId, sizeof(prompt_id_seen) - 1);
+            prompt_id_seen[sizeof(prompt_id_seen) - 1] = 0;
+            responded = false;
+            response_label = "";
+        }
+
+        // Pending prompt → A approves, B denies. Format per REFERENCE.md.
+        if (tama.promptId[0] && !responded) {
+            const char* decision = nullptr;
+            if (btnPressed(Btn::A)) { decision = "once"; response_label = "approved"; }
+            else if (btnPressed(Btn::B)) { decision = "deny"; response_label = "denied"; }
+            if (decision) {
+                char cmd[160];
+                int n = snprintf(cmd, sizeof(cmd),
+                    "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"%s\"}\n",
+                    tama.promptId, decision);
+                bleWrite((const uint8_t*)cmd, (size_t)n);
+                responded = true;
+                responded_at_ms = now;
+            }
+        }
 
         g.set_pen(BG);
         g.clear();
-
         g.set_font("bitmap8");
+
+        // Title + link/data state along the top
         g.set_pen(ACCENT);
-        g.text("Claude Buddy", Point(12, 40), W, 5);
+        g.text("Claude Buddy", Point(12, 10), W, 3);
 
-        g.set_pen(TEXT);
-        g.text("Tufty 2350", Point(12, 110), W, 2);
-
-        g.set_pen(DIM);
-        g.text("pico-sdk port", Point(12, 140), W, 1);
-
-        // BLE state — show actual btstack HCI state so we can tell init
-        // success from advertising-but-no-client from full connection.
-        char ble_label[40];
+        // BLE link state (top-right)
         const char* hci = bleHciState();
-        bool linked    = bleConnected();
-        bool working   = hci[0] == 'w';   // "work" = HCI_STATE_WORKING
-        snprintf(ble_label, sizeof(ble_label),
-                 "BLE: %s", linked ? "connected" : working ? "advertising" : hci);
-        int col = linked  ? rgb_pen(g, 0x40, 0xE0, 0x60)   // green
-                : working ? rgb_pen(g, 0xFA, 0xC0, 0x40)   // amber
-                          : rgb_pen(g, 0xE0, 0x40, 0x40);  // red — not up
-        g.set_pen(col);
-        g.text(ble_label, Point(12, 175), W, 2);
+        bool linked  = bleConnected();
+        bool working = hci[0] == 'w';
+        const char* link_label = linked ? "linked" : working ? "advertising" : hci;
+        g.set_pen(linked ? OK : working ? WARN : HOT);
+        g.text(link_label, Point(W - 110, 14), W, 2);
+
+        // Session counts row
+        char buf[80];
+        if (tama.connected) {
+            snprintf(buf, sizeof(buf), "%u sessions  %u running  %u waiting",
+                     tama.sessionsTotal, tama.sessionsRunning, tama.sessionsWaiting);
+            g.set_pen(TEXT);
+        } else {
+            snprintf(buf, sizeof(buf), linked ? "waiting for heartbeat..."
+                                              : "no Claude desktop connected");
+            g.set_pen(DIM);
+        }
+        g.text(buf, Point(12, 55), W, 2);
+
+        // Latest one-line message
+        if (tama.msg[0]) {
+            g.set_pen(tama.sessionsWaiting > 0 ? WARN : TEXT);
+            g.text(tama.msg, Point(12, 85), W, 2);
+        }
+
+        // Pending permission prompt — the headline event
+        if (tama.promptId[0]) {
+            g.set_pen(responded ? OK : HOT);
+            char prompt_line[100];
+            snprintf(prompt_line, sizeof(prompt_line),
+                     "%s%s", responded ? "sent: " : "approve? ",
+                     responded ? response_label : tama.promptTool);
+            g.text(prompt_line, Point(12, 115), W, 3);
+            g.set_pen(DIM);
+            g.text(tama.promptHint, Point(12, 150), W, 1);
+            if (!responded) {
+                g.set_pen(OK);
+                g.text("A approve", Point(12, 175), W, 2);
+                g.set_pen(HOT);
+                g.text("B deny", Point(160, 175), W, 2);
+            }
+        } else {
+            // Otherwise show transcript entries
+            g.set_pen(DIM);
+            int y = 115;
+            for (int i = 0; i < tama.nLines && y < H - 40; i++) {
+                g.text(tama.lines[i], Point(12, y), W, 1);
+                y += 10;
+            }
+        }
 
         // Button row: A B C ^ v. Held → accent, idle → dim.
         const char* labels[] = {"A", "B", "C", "^", "v"};
@@ -112,10 +188,20 @@ int main() {
             g.text(labels[i], Point(W - 110 + i * 22, H - 24), W, 3);
         }
 
+        // Diagnostic line: heartbeats parsed, raw bytes RX, age of last
+        // heartbeat. Lets us tell "no updates arriving" from "updates
+        // arriving but counters stay 0".
         g.set_pen(DIM);
-        char buf[32];
-        snprintf(buf, sizeof(buf), "frame %lu", (unsigned long)tick);
-        g.text(buf, Point(12, H - 16), W, 1);
+        char diag[64];
+        uint32_t age_ms = tama.lastUpdated
+            ? (to_ms_since_boot(get_absolute_time()) - tama.lastUpdated)
+            : 0;
+        snprintf(diag, sizeof(diag),
+                 "hb %lu  rx %lu B  age %lus",
+                 (unsigned long)dataHeartbeatCount(),
+                 (unsigned long)dataBytesReceived(),
+                 (unsigned long)(age_ms / 1000));
+        g.text(diag, Point(12, H - 16), W, 1);
 
         lcd.update();
 
