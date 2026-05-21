@@ -39,6 +39,15 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+# --- PicoGraphics + fonts from pimoroni-pico (Pimoroni's render abstraction).
+# We point it at our vendored ST7789 driver's framebuffer rather than letting
+# it allocate its own — same 320x240 buffer serves both, since the RP2350's
+# 520KB SRAM can't fit two full-resolution 32bpp buffers.
+include_directories("${PIMORONI_PICO_PATH}")
+include("${PIMORONI_PICO_PATH}/libraries/bitmap_fonts/bitmap_fonts.cmake")
+include("${PIMORONI_PICO_PATH}/libraries/hershey_fonts/hershey_fonts.cmake")
+include("${PIMORONI_PICO_PATH}/libraries/pico_graphics/pico_graphics.cmake")
+
 # --- Firmware target ---
 # The Tufty 2350's ST7789 panel has a different controller variant than the
 # Tufty 2040 — different voltage/timing parameters, doesn't honor MADCTL.SWAP_XY.
@@ -48,6 +57,8 @@ pico_sdk_init()
 # upstream pointer + the small MicroPython-glue strip).
 add_executable(claude_buddy
     src/main.cpp
+    src/ble_bridge.cpp
+    src/buttons.cpp
     src/drivers/st7789/st7789.cpp
 )
 
@@ -56,9 +67,20 @@ pico_generate_pio_header(claude_buddy
     ${CMAKE_CURRENT_LIST_DIR}/src/drivers/st7789/st7789_parallel.pio
 )
 
+# Compile our GATT DSL into a C header that btstack's att_server consumes.
+pico_btstack_make_gatt_header(claude_buddy PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/src/nus_service.gatt"
+)
+
 target_include_directories(claude_buddy PRIVATE
     src
     src/drivers/st7789
+)
+
+# cyw43-driver pulls in lwIP by default for WiFi networking. We use BT only,
+# so disable the lwIP integration — saves flash and avoids needing lwipopts.
+target_compile_definitions(claude_buddy PRIVATE
+    CYW43_LWIP=0
 )
 
 target_link_libraries(claude_buddy
@@ -66,6 +88,11 @@ target_link_libraries(claude_buddy
     hardware_pwm
     hardware_pio
     hardware_dma
+    pico_graphics
+    pico_cyw43_arch_threadsafe_background
+    pico_btstack_ble
+    pico_btstack_cyw43
+    pico_btstack_run_loop_async_context
 )
 
 pico_enable_stdio_usb(claude_buddy 1)

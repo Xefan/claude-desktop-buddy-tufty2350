@@ -1,0 +1,10 @@
+// GATT database for the Claude Buddy NUS bridge.
+// btstack's compile_gatt.py turns this into a C header at build time.
+
+PRIMARY_SERVICE, GAP_SERVICE
+CHARACTERISTIC, GAP_DEVICE_NAME, READ, "Claude"
+
+// Nordic UART Service — btstack ships the standard NUS definition so we
+// just import it. Service + TX (notify) + RX (write) characteristics with
+// the canonical 6e400001/02/03 UUIDs the Claude desktop picker filters on.
+#import <nordic_spp_service.gatt>
