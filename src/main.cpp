@@ -14,6 +14,7 @@
 #include "power.h"
 #include "rtc.h"
 #include "settings.h"
+#include "stats.h"
 
 // Pimoroni's tufty2350 board header pins PICO_PANIC_FUNCTION at mp_pico_panic
 // because the upstream copy is the MicroPython board definition. We're not
@@ -81,12 +82,13 @@ int main() {
     constexpr int W = 320, H = 240;
     PicoGraphics_PenRGB888 g(W, H, lcd.get_framebuffer());
 
-    // ASCII buddy lives in a 200×140 stage in the bottom-left of the screen
-    // (below the title row, leaving the right column for stats/state).
+    // ASCII buddy lives in a 180×200 stage on the left half of the screen,
+    // below the title bar. The info column gets the right ~130px.
     buddyInit();
-    buddyAttach(&g, 0, 60);
+    buddyAttach(&g, 0, 40);
     buddySetSpeciesIdx(settings().species_idx);
     menuInit();
+    statsInit();
 
     // Brightness levels map 0..4 → backlight PWM. Level 0 stays visible
     // so a settings mishap doesn't leave the screen black.
@@ -112,9 +114,18 @@ int main() {
     uint32_t prompt_arrived_ms = 0;
     uint32_t heart_until_ms = 0;       // brief P_HEART override after fast approval
 
+    // Multi-view UI. A button cycles between them when no prompt/menu is
+    // active. Upstream's text/transcript HUD view doesn't fit landscape, so
+    // we drop it — session activity is visible through the buddy's persona.
+    enum View : uint8_t { V_PET = 0, V_INFO, V_COUNT };
+    View view = V_PET;
+    uint32_t celebrate_until_ms = 0;   // brief P_CELEBRATE after a level-up
+
     // Map session state + transient overrides to PersonaState.
-    auto derive_persona = [&heart_until_ms](const TamaState& s, uint32_t now) -> uint8_t {
-        if ((int32_t)(heart_until_ms - now) > 0) return 6;   // heart (transient)
+    auto derive_persona = [&heart_until_ms, &celebrate_until_ms]
+                          (const TamaState& s, uint32_t now) -> uint8_t {
+        if ((int32_t)(heart_until_ms - now) > 0)     return 6;   // heart
+        if ((int32_t)(celebrate_until_ms - now) > 0) return 4;   // celebrate
         if (s.promptId[0])          return 3;   // attention
         if (!s.connected)           return 0;   // sleep
         if (s.recentlyCompleted)    return 4;   // celebrate
@@ -143,25 +154,33 @@ int main() {
             if (tama.promptId[0]) prompt_arrived_ms = now;
         }
 
-        // Pending prompt → A approves, B denies. Format per REFERENCE.md.
-        // Skip while the menu is open — A/B/Up/Down belong to the menu then.
-        if (tama.promptId[0] && !responded && !menuIsOpen()) {
-            const char* decision = nullptr;
-            if (btnPressed(Btn::A)) { decision = "once"; response_label = "approved"; }
-            else if (btnPressed(Btn::B)) { decision = "deny"; response_label = "denied"; }
-            if (decision) {
-                char cmd[160];
-                int n = snprintf(cmd, sizeof(cmd),
-                    "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"%s\"}\n",
-                    tama.promptId, decision);
-                bleWrite((const uint8_t*)cmd, (size_t)n);
-                responded = true;
-                responded_at_ms = now;
-                // Reward fast approvals with a brief P_HEART override —
-                // matches upstream's "responded in under 5s = device flashes hearts".
-                if (decision[0] == 'o' && (now - prompt_arrived_ms) < 5000) {
-                    heart_until_ms = now + 2000;
+        // A button behavior is context-sensitive:
+        //   prompt pending → approve
+        //   no prompt      → cycle home/pet/info views
+        // B is similarly: prompt → deny; otherwise no-op (reserved for sub-page nav).
+        if (!menuIsOpen()) {
+            if (tama.promptId[0] && !responded) {
+                const char* decision = nullptr;
+                if (btnPressed(Btn::A)) { decision = "once"; response_label = "approved"; }
+                else if (btnPressed(Btn::B)) { decision = "deny"; response_label = "denied"; }
+                if (decision) {
+                    char cmd[160];
+                    int n = snprintf(cmd, sizeof(cmd),
+                        "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"%s\"}\n",
+                        tama.promptId, decision);
+                    bleWrite((const uint8_t*)cmd, (size_t)n);
+                    responded = true;
+                    responded_at_ms = now;
+                    uint32_t took_s = (now - prompt_arrived_ms) / 1000;
+                    if (decision[0] == 'o') {                  // approved
+                        statsOnApproval(took_s);
+                        if (took_s < 5) heart_until_ms = now + 2000;
+                    } else {
+                        statsOnDenial();
+                    }
                 }
+            } else if (btnPressed(Btn::A)) {
+                view = (View)((view + 1) % V_COUNT);
             }
         }
 
@@ -169,126 +188,197 @@ int main() {
         g.clear();
         g.set_font("bitmap8");
 
-        // Draw the ASCII buddy in its stage. buddyTick paints over the stage
-        // background each tick — its background must match ours.
-        buddyTick(derive_persona(tama, now));
-
-        // Title + link/data state along the top. Once the desktop has sent
-        // {"cmd":"owner","name":"..."} the title personalises to "<X>'s Buddy".
+        // ────────────── Top bar: title (left) + compact status (right) ──────────────
+        // Title personalises to "<owner>'s Buddy" once the desktop has sent
+        // {"cmd":"owner","name":"..."}; otherwise falls back to "Claude Buddy".
         g.set_pen(ACCENT);
-        char title_buf[64];
+        char title_buf[40];
         const char* owner = settings().owner;
         if (owner[0]) snprintf(title_buf, sizeof(title_buf), "%s's Buddy", owner);
         else          snprintf(title_buf, sizeof(title_buf), "Claude Buddy");
-        g.text(title_buf, Point(12, 10), W, 3);
+        g.text(title_buf, Point(6, 4), 200, 2);
 
-        // BLE link state (top-right)
+        // Right-aligned status: link state · power · clock. Approximate
+        // bitmap8 char width = 6px at scale 1; we right-align manually.
         const char* hci = bleHciState();
         bool linked  = bleConnected();
         bool working = hci[0] == 'w';
-        const char* link_label = linked ? "linked" : working ? "advertising" : hci;
-        g.set_pen(linked ? OK : working ? WARN : HOT);
-        g.text(link_label, Point(W - 110, 14), W, 2);
+        const char* link_label = linked ? "linked" : working ? "scanning" : "off";
+        int link_pen = linked ? OK : working ? WARN : HOT;
 
-        // Power state below the BLE label: "USB" when plugged in, else "NN%".
         bool on_usb = batteryOnUsb();
-        char pwr[16];
-        if (on_usb) snprintf(pwr, sizeof(pwr), "USB");
-        else        snprintf(pwr, sizeof(pwr), "%d%%", batteryPercent());
         int  pct = batteryPercent();
-        int  pwr_pen = on_usb ? OK
-                     : pct < 15 ? HOT
-                     : pct < 30 ? WARN
-                                : DIM;
-        g.set_pen(pwr_pen);
-        g.text(pwr, Point(W - 110, 32), W, 2);
+        char pwr_buf[8];
+        const char* pwr_str;
+        if (on_usb) pwr_str = "USB";
+        else { snprintf(pwr_buf, sizeof(pwr_buf), "%d%%", pct); pwr_str = pwr_buf; }
+        int pwr_pen = on_usb ? OK : pct < 15 ? HOT : pct < 30 ? WARN : DIM;
 
-        // Clock (only shown once the desktop has time-synced us).
         RtcNow t;
-        if (rtcRead(&t)) {
-            char clock_buf[8];
-            snprintf(clock_buf, sizeof(clock_buf), "%02d:%02d", t.hour, t.min);
+        bool has_time = rtcRead(&t);
+        char clock_buf[8] = "";
+        if (has_time) snprintf(clock_buf, sizeof(clock_buf), "%02d:%02d", t.hour, t.min);
+
+        // Lay out right-to-left so absolute widths don't have to match exactly.
+        int rx = W - 6;
+        if (has_time) {
+            int w = (int)strlen(clock_buf) * 6;
+            rx -= w;
             g.set_pen(DIM);
-            g.text(clock_buf, Point(W - 110, 50), W, 2);
+            g.text(clock_buf, Point(rx, 8), 999, 1);
+            rx -= 8;
+        }
+        {
+            int w = (int)strlen(pwr_str) * 6;
+            rx -= w;
+            g.set_pen(pwr_pen);
+            g.text(pwr_str, Point(rx, 8), 999, 1);
+            rx -= 8;
+        }
+        {
+            int w = (int)strlen(link_label) * 6;
+            rx -= w;
+            g.set_pen(link_pen);
+            g.text(link_label, Point(rx, 8), 999, 1);
         }
 
-        // Session counts row
-        char buf[80];
-        if (tama.connected) {
-            snprintf(buf, sizeof(buf), "%u sessions  %u running  %u waiting",
-                     tama.sessionsTotal, tama.sessionsRunning, tama.sessionsWaiting);
-            g.set_pen(TEXT);
-        } else {
-            snprintf(buf, sizeof(buf), linked ? "waiting for heartbeat..."
-                                              : "no Claude desktop connected");
-            g.set_pen(DIM);
-        }
-        g.text(buf, Point(12, 55), W, 2);
-
-        // Latest one-line message
-        if (tama.msg[0]) {
-            g.set_pen(tama.sessionsWaiting > 0 ? WARN : TEXT);
-            g.text(tama.msg, Point(12, 85), W, 2);
-        }
-
-        // Pending permission prompt — the headline event
-        if (tama.promptId[0]) {
-            g.set_pen(responded ? OK : HOT);
-            char prompt_line[100];
-            snprintf(prompt_line, sizeof(prompt_line),
-                     "%s%s", responded ? "sent: " : "approve? ",
-                     responded ? response_label : tama.promptTool);
-            g.text(prompt_line, Point(12, 115), W, 3);
-            g.set_pen(DIM);
-            g.text(tama.promptHint, Point(12, 150), W, 1);
-            if (!responded) {
-                g.set_pen(OK);
-                g.text("A approve", Point(12, 175), W, 2);
-                g.set_pen(HOT);
-                g.text("B deny", Point(160, 175), W, 2);
-            }
-        } else {
-            // Otherwise show transcript entries
-            g.set_pen(DIM);
-            int y = 115;
-            for (int i = 0; i < tama.nLines && y < H - 40; i++) {
-                g.text(tama.lines[i], Point(12, y), W, 1);
-                y += 10;
-            }
-        }
-
-        // Button row: A B C ^ v. Held → accent, idle → dim.
-        const char* labels[] = {"A", "B", "C", "^", "v"};
-        const Btn   btns[]   = {Btn::A, Btn::B, Btn::C, Btn::Up, Btn::Down};
-        for (int i = 0; i < 5; i++) {
-            g.set_pen(btnHeld(btns[i]) ? ACCENT : DIM);
-            g.text(labels[i], Point(W - 110 + i * 22, H - 24), W, 3);
-        }
-
-        // Diagnostic line: heartbeats parsed, raw bytes RX, age of last
-        // heartbeat. Lets us tell "no updates arriving" from "updates
-        // arriving but counters stay 0".
+        // Thin divider under the top bar.
         g.set_pen(DIM);
-        char diag[64];
-        uint32_t age_ms = tama.lastUpdated
-            ? (to_ms_since_boot(get_absolute_time()) - tama.lastUpdated)
-            : 0;
-        snprintf(diag, sizeof(diag),
-                 "hb %lu  rx %lu B  age %lus",
-                 (unsigned long)dataHeartbeatCount(),
-                 (unsigned long)dataBytesReceived(),
-                 (unsigned long)(age_ms / 1000));
-        g.text(diag, Point(12, H - 16), W, 1);
+        g.rectangle(Rect(0, 22, W, 1));
+
+        // ────────────── Buddy on the left half ──────────────
+        // buddyTick paints into its 180×200 stage at (0, 40). The screen-wide
+        // clear above keeps the bg consistent; the buddy redraws every frame.
+        buddyTick(derive_persona(tama, now));
+
+        // Optional vertical divider between buddy and info column.
+        g.set_pen(DIM);
+        g.rectangle(Rect(184, 28, 1, H - 32));
+
+        // ────────────── Info column on the right ──────────────
+        constexpr int IX = 192;
+        constexpr int IW = W - IX - 4;
+        int iy = 30;
+
+        if (tama.promptId[0]) {
+            // Approval prompt always wins — even if user was browsing PET/INFO.
+            g.set_pen(responded ? OK : HOT);
+            char head[64];
+            snprintf(head, sizeof(head), "%s%s",
+                     responded ? "sent: " : "approve?",
+                     responded ? response_label : "");
+            g.text(head, Point(IX, iy), IW, 2);
+            iy += 22;
+
+            if (!responded) {
+                g.set_pen(TEXT);
+                g.text(tama.promptTool, Point(IX, iy), IW, 3);
+                iy += 30;
+                if (tama.promptHint[0]) {
+                    g.set_pen(DIM);
+                    g.text(tama.promptHint, Point(IX, iy), IW, 1);
+                }
+                g.set_pen(OK);
+                g.text("A approve", Point(IX, H - 38), IW, 2);
+                g.set_pen(HOT);
+                g.text("B deny",    Point(IX, H - 18), IW, 2);
+            }
+        } else if (view == V_PET) {
+            // Pet stats — mood, fed, energy, level, lifetime counts.
+            uint8_t mood = statsMoodTier();
+            uint8_t fed  = statsFedProgress();
+            uint8_t ene  = statsEnergyTier();
+            const Stats& st = stats();
+
+            auto pips = [&](int y, int filled, int total, int pip_w, int gap, int on_pen) {
+                for (int i = 0; i < total; i++) {
+                    int px = IX + i * (pip_w + gap);
+                    if (i < filled) {
+                        g.set_pen(on_pen);
+                        g.rectangle(Rect(px, y, pip_w, 8));
+                    } else {
+                        g.set_pen(DIM);
+                        g.rectangle(Rect(px, y, pip_w, 8));
+                        g.set_pen(BG);
+                        g.rectangle(Rect(px + 1, y + 1, pip_w - 2, 6));
+                    }
+                }
+            };
+
+            g.set_pen(DIM); g.text("mood",   Point(IX, iy), IW, 1);
+            int mood_pen = mood >= 3 ? OK : mood >= 2 ? WARN : HOT;
+            pips(iy + 12, mood, 4, 12, 4, mood_pen);
+            iy += 28;
+
+            g.set_pen(DIM); g.text("fed",    Point(IX, iy), IW, 1);
+            pips(iy + 12, fed, 10, 8, 2, ACCENT);
+            iy += 28;
+
+            g.set_pen(DIM); g.text("energy", Point(IX, iy), IW, 1);
+            int en_pen = ene >= 4 ? OK : ene >= 2 ? WARN : HOT;
+            pips(iy + 12, ene, 5, 14, 4, en_pen);
+            iy += 28;
+
+            // Level badge + lifetime counters
+            g.set_pen(ACCENT);
+            char lvl_buf[12]; snprintf(lvl_buf, sizeof(lvl_buf), "Lv %u", st.level);
+            g.text(lvl_buf, Point(IX, iy), IW, 2);
+            iy += 24;
+
+            g.set_pen(DIM);
+            char cnt[40];
+            snprintf(cnt, sizeof(cnt), "approved  %lu", (unsigned long)st.approvals);
+            g.text(cnt, Point(IX, iy), IW, 1); iy += 11;
+            snprintf(cnt, sizeof(cnt), "denied    %lu", (unsigned long)st.denials);
+            g.text(cnt, Point(IX, iy), IW, 1); iy += 11;
+            if (st.tokens >= 1000)
+                snprintf(cnt, sizeof(cnt), "tokens    %luK", (unsigned long)(st.tokens / 1000));
+            else
+                snprintf(cnt, sizeof(cnt), "tokens    %lu",  (unsigned long)st.tokens);
+            g.text(cnt, Point(IX, iy), IW, 1); iy += 11;
+        } else if (view == V_INFO) {
+            // Info — owner/device/uptime/MAC/firmware. Single combined page
+            // (upstream paginates this; landscape gives us room for one card).
+            g.set_pen(ACCENT); g.text("INFO", Point(IX, iy), IW, 2);
+            iy += 22;
+
+            char ln[40];
+            g.set_pen(TEXT);
+            snprintf(ln, sizeof(ln), "owner   %s", owner[0] ? owner : "-");
+            g.text(ln, Point(IX, iy), IW, 1); iy += 12;
+
+            int mv = batteryMillivolts();
+            snprintf(ln, sizeof(ln), "battery %d%%  %d.%02dV",
+                     pct, mv / 1000, (mv % 1000) / 10);
+            g.text(ln, Point(IX, iy), IW, 1); iy += 12;
+
+            snprintf(ln, sizeof(ln), "power   %s", on_usb ? "USB" : "battery");
+            g.text(ln, Point(IX, iy), IW, 1); iy += 12;
+
+            uint32_t up = (uint32_t)(now / 1000);
+            snprintf(ln, sizeof(ln), "uptime  %luh %02lum", up / 3600, (up / 60) % 60);
+            g.text(ln, Point(IX, iy), IW, 1); iy += 12;
+
+            snprintf(ln, sizeof(ln), "ble     %s", linked ? "linked" : working ? "scan" : "off");
+            g.text(ln, Point(IX, iy), IW, 1); iy += 12;
+
+            snprintf(ln, sizeof(ln), "species %s", buddySpeciesName());
+            g.text(ln, Point(IX, iy), IW, 1); iy += 12;
+
+            iy += 6;
+            g.set_pen(DIM);
+            g.text("A: next view",  Point(IX, iy), IW, 1); iy += 11;
+            g.text("hold A: menu",  Point(IX, iy), IW, 1); iy += 11;
+        }
 
         // Settings menu draws last so it overlays everything underneath.
         menuDraw(g, W, H);
 
         lcd.update();
 
-        // Case LEDs:
-        //   Pending unanswered prompt → all four pulse in sync at ~2Hz
-        //     (unless the user has switched the attention LED off).
-        //   Otherwise → subtle chase as "I'm alive" heartbeat.
+        // Case LEDs only light up on an unanswered prompt (and only when the
+        // user hasn't turned the attention LED off in the settings menu).
+        // No idle animation — keeps the device quiet when nothing's pending.
         bool attention = tama.promptId[0] && !responded && settings().led_on;
         if (attention) {
             // Triangle wave 0..0xFFFF..0 over 30 frames (~2Hz at 60fps).
@@ -297,15 +387,7 @@ int main() {
             uint16_t level = (uint16_t)((amp * 0xFFFF) / 15);
             for (uint i = 0; i < 4; i++) pwm_set_gpio_level(tufty::CASE_LEDS[i], level);
         } else {
-            uint active = (tick / 30) % 4;
-            for (uint i = 0; i < 4; i++) {
-                uint dist = (i + 4 - active) % 4;
-                uint16_t level = dist == 0 ? 0xC000
-                               : dist == 1 ? 0x3000
-                               : dist == 2 ? 0x0800
-                                           : 0x0200;
-                pwm_set_gpio_level(tufty::CASE_LEDS[i], level);
-            }
+            for (uint i = 0; i < 4; i++) pwm_set_gpio_level(tufty::CASE_LEDS[i], 0);
         }
 
         tick++;

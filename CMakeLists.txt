@@ -75,6 +75,7 @@ add_executable(claude_buddy
     src/power.cpp
     src/rtc.cpp
     src/settings.cpp
+    src/stats.cpp
     src/drivers/st7789/st7789.cpp
     src/buddies/axolotl.cpp
     src/buddies/blob.cpp

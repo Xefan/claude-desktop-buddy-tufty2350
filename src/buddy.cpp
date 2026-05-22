@@ -36,8 +36,8 @@ constexpr uint32_t TICK_MS = 200;
 
 // The buddy lives inside a rectangular "stage" of this size. main.cpp
 // places the stage by passing its top-left corner to buddyAttach().
-constexpr int BUDDY_STAGE_W = 200;
-constexpr int BUDDY_STAGE_H = 140;
+constexpr int BUDDY_STAGE_W = 180;
+constexpr int BUDDY_STAGE_H = 200;
 
 pimoroni::PicoGraphics* g_target = nullptr;
 int canvas_x = 0;     // left edge of stage on screen

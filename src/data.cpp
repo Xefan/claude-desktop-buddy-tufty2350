@@ -8,6 +8,7 @@
 #include "ble_bridge.h"
 #include "rtc.h"
 #include "settings.h"
+#include "stats.h"
 #include "lib/ArduinoJson.h"
 
 namespace {
@@ -99,6 +100,8 @@ bool apply_json(const char* line, TamaState* out) {
     out->recentlyCompleted = doc["completed"] | false;
     out->tokens            = doc["tokens"]        | out->tokens;
     out->tokensToday       = doc["tokens_today"]  | out->tokensToday;
+    // Feed cumulative token count into stats so level / fed progress advance.
+    if (doc["tokens"].is<uint32_t>()) statsOnBridgeTokens(doc["tokens"].as<uint32_t>());
 
     if (const char* m = doc["msg"]) copy_str(out->msg, m);
 
