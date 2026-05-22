@@ -10,6 +10,7 @@
 #include "buddy.h"
 #include "buttons.h"
 #include "data.h"
+#include "menu.h"
 #include "power.h"
 #include "rtc.h"
 #include "settings.h"
@@ -85,6 +86,11 @@ int main() {
     buddyInit();
     buddyAttach(&g, 0, 60);
     buddySetSpeciesIdx(settings().species_idx);
+    menuInit();
+
+    // Brightness levels map 0..4 → backlight PWM. Level 0 stays visible
+    // so a settings mishap doesn't leave the screen black.
+    static const uint8_t BRIGHT_LEVELS[5] = {30, 80, 130, 180, 240};
 
     int BG     = rgb_pen(g, 0x10, 0x10, 0x18);
     int ACCENT = rgb_pen(g, 0xFA, 0x70, 0x20);
@@ -119,16 +125,13 @@ int main() {
     uint32_t tick = 0;
     while (true) {
         buttonsUpdate();
+        menuUpdate();         // hold-A opens menu; consumes Up/Down/A/B while open
         powerUpdate();        // long-press RESET → dormant sleep (no return)
         dataPoll(&tama);
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
-        // Cycle species on Up-button press; persist choice across reboots.
-        if (btnPressed(Btn::Up)) {
-            buddyNextSpecies();
-            settingsSetSpeciesIdx(buddySpeciesIdx());
-            settingsSave();
-        }
+        // Apply user-set brightness each frame — cheap PWM register write.
+        lcd.set_backlight(BRIGHT_LEVELS[settings().brightness]);
 
         // Reset response latch when the prompt id changes (new prompt arrived,
         // or the old one was cleared by a heartbeat without `prompt`).
@@ -141,7 +144,8 @@ int main() {
         }
 
         // Pending prompt → A approves, B denies. Format per REFERENCE.md.
-        if (tama.promptId[0] && !responded) {
+        // Skip while the menu is open — A/B/Up/Down belong to the menu then.
+        if (tama.promptId[0] && !responded && !menuIsOpen()) {
             const char* decision = nullptr;
             if (btnPressed(Btn::A)) { decision = "once"; response_label = "approved"; }
             else if (btnPressed(Btn::B)) { decision = "deny"; response_label = "denied"; }
@@ -276,12 +280,16 @@ int main() {
                  (unsigned long)(age_ms / 1000));
         g.text(diag, Point(12, H - 16), W, 1);
 
+        // Settings menu draws last so it overlays everything underneath.
+        menuDraw(g, W, H);
+
         lcd.update();
 
         // Case LEDs:
-        //   Pending unanswered prompt → all four pulse in sync at ~2Hz.
-        //   Otherwise                 → subtle chase as "I'm alive" heartbeat.
-        bool attention = tama.promptId[0] && !responded;
+        //   Pending unanswered prompt → all four pulse in sync at ~2Hz
+        //     (unless the user has switched the attention LED off).
+        //   Otherwise → subtle chase as "I'm alive" heartbeat.
+        bool attention = tama.promptId[0] && !responded && settings().led_on;
         if (attention) {
             // Triangle wave 0..0xFFFF..0 over 30 frames (~2Hz at 60fps).
             int phase = tick % 30;

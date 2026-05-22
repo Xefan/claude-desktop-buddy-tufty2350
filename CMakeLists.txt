@@ -71,6 +71,7 @@ add_executable(claude_buddy
     src/buttons.cpp
     src/buddy.cpp
     src/data.cpp
+    src/menu.cpp
     src/power.cpp
     src/rtc.cpp
     src/settings.cpp

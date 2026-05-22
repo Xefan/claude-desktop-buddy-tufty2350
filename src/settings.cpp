@@ -48,6 +48,14 @@ void settingsInit() {
     } else {
         std::memset(&g_settings, 0, sizeof(g_settings));
     }
+    // Newer Settings fields (added after the v1 schema) get sensible defaults
+    // when their zero-pad bytes from the original flash write are detected.
+    // The sentinel is set the first time we settingsSave() after the upgrade.
+    if (g_settings.defaults_v1 != 0xA5) {
+        g_settings.brightness  = 3;
+        g_settings.led_on      = 1;
+        g_settings.defaults_v1 = 0xA5;
+    }
 }
 
 const Settings& settings() { return g_settings; }
@@ -60,6 +68,15 @@ void settingsSetOwner(const char* name) {
 
 void settingsSetSpeciesIdx(uint8_t idx) {
     g_settings.species_idx = idx;
+}
+
+void settingsSetBrightness(uint8_t level) {
+    if (level > 4) level = 4;
+    g_settings.brightness = level;
+}
+
+void settingsSetLedOn(bool on) {
+    g_settings.led_on = on ? 1 : 0;
 }
 
 void settingsSave() {
