@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "pico/stdlib.h"
+#include "battery.h"
 #include "ble_bridge.h"
 #include "rtc.h"
 #include "settings.h"
@@ -52,6 +53,27 @@ bool apply_json(const char* line, TamaState* out) {
                 settingsSave();
             }
             send_ack("owner", true);
+            return true;
+        }
+        if (std::strcmp(cmd, "status") == 0) {
+            // Compose REFERENCE.md's status ack from what we can measure.
+            // Fields we don't track yet (bat.mA, sys.heap, stats.*) are
+            // omitted — the desktop's panel handles missing keys.
+            char buf[256];
+            uint32_t up_s = to_ms_since_boot(get_absolute_time()) / 1000;
+            const char* name = settings().owner[0] ? settings().owner : "Claude";
+            int n = snprintf(buf, sizeof(buf),
+                "{\"ack\":\"status\",\"ok\":true,\"data\":{"
+                "\"name\":\"%s\","
+                "\"sec\":false,"
+                "\"bat\":{\"pct\":%d,\"mV\":%d,\"usb\":%s},"
+                "\"sys\":{\"up\":%lu}"
+                "}}\n",
+                name,
+                batteryPercent(), batteryMillivolts(),
+                batteryOnUsb() ? "true" : "false",
+                (unsigned long)up_s);
+            if (n > 0) bleWrite((const uint8_t*)buf, (size_t)n);
             return true;
         }
         // Unknown command — ack with ok:false so the desktop knows we got it

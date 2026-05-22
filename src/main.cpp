@@ -84,6 +84,7 @@ int main() {
     // (below the title row, leaving the right column for stats/state).
     buddyInit();
     buddyAttach(&g, 0, 60);
+    buddySetSpeciesIdx(settings().species_idx);
 
     int BG     = rgb_pen(g, 0x10, 0x10, 0x18);
     int ACCENT = rgb_pen(g, 0xFA, 0x70, 0x20);
@@ -102,9 +103,12 @@ int main() {
     bool responded = false;
     const char* response_label = "";   // "approved" / "denied" briefly after sending
     uint32_t responded_at_ms = 0;
+    uint32_t prompt_arrived_ms = 0;
+    uint32_t heart_until_ms = 0;       // brief P_HEART override after fast approval
 
-    // Map session state to PersonaState (sleep/idle/busy/attention/celebrate).
-    auto derive_persona = [](const TamaState& s) -> uint8_t {
+    // Map session state + transient overrides to PersonaState.
+    auto derive_persona = [&heart_until_ms](const TamaState& s, uint32_t now) -> uint8_t {
+        if ((int32_t)(heart_until_ms - now) > 0) return 6;   // heart (transient)
         if (s.promptId[0])          return 3;   // attention
         if (!s.connected)           return 0;   // sleep
         if (s.recentlyCompleted)    return 4;   // celebrate
@@ -119,8 +123,12 @@ int main() {
         dataPoll(&tama);
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
-        // Cycle through species on Up-button press for quick visual testing.
-        if (btnPressed(Btn::Up)) buddyNextSpecies();
+        // Cycle species on Up-button press; persist choice across reboots.
+        if (btnPressed(Btn::Up)) {
+            buddyNextSpecies();
+            settingsSetSpeciesIdx(buddySpeciesIdx());
+            settingsSave();
+        }
 
         // Reset response latch when the prompt id changes (new prompt arrived,
         // or the old one was cleared by a heartbeat without `prompt`).
@@ -129,6 +137,7 @@ int main() {
             prompt_id_seen[sizeof(prompt_id_seen) - 1] = 0;
             responded = false;
             response_label = "";
+            if (tama.promptId[0]) prompt_arrived_ms = now;
         }
 
         // Pending prompt → A approves, B denies. Format per REFERENCE.md.
@@ -144,6 +153,11 @@ int main() {
                 bleWrite((const uint8_t*)cmd, (size_t)n);
                 responded = true;
                 responded_at_ms = now;
+                // Reward fast approvals with a brief P_HEART override —
+                // matches upstream's "responded in under 5s = device flashes hearts".
+                if (decision[0] == 'o' && (now - prompt_arrived_ms) < 5000) {
+                    heart_until_ms = now + 2000;
+                }
             }
         }
 
@@ -153,7 +167,7 @@ int main() {
 
         // Draw the ASCII buddy in its stage. buddyTick paints over the stage
         // background each tick — its background must match ours.
-        buddyTick(derive_persona(tama));
+        buddyTick(derive_persona(tama, now));
 
         // Title + link/data state along the top. Once the desktop has sent
         // {"cmd":"owner","name":"..."} the title personalises to "<X>'s Buddy".

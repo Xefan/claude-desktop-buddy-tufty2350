@@ -58,6 +58,10 @@ void settingsSetOwner(const char* name) {
     g_settings.owner[sizeof(g_settings.owner) - 1] = 0;
 }
 
+void settingsSetSpeciesIdx(uint8_t idx) {
+    g_settings.species_idx = idx;
+}
+
 void settingsSave() {
     // flash_safe_execute pauses cyw43/IRQs across the erase+program so BLE
     // doesn't race with the bus. Wait indefinitely for the lock.
