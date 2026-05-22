@@ -7,6 +7,7 @@
 #include "libraries/pico_graphics/pico_graphics.hpp"
 #include "battery.h"
 #include "ble_bridge.h"
+#include "buddy.h"
 #include "buttons.h"
 #include "data.h"
 #include "power.h"
@@ -79,6 +80,11 @@ int main() {
     constexpr int W = 320, H = 240;
     PicoGraphics_PenRGB888 g(W, H, lcd.get_framebuffer());
 
+    // ASCII buddy lives in a 200×140 stage in the bottom-left of the screen
+    // (below the title row, leaving the right column for stats/state).
+    buddyInit();
+    buddyAttach(&g, 0, 60);
+
     int BG     = rgb_pen(g, 0x10, 0x10, 0x18);
     int ACCENT = rgb_pen(g, 0xFA, 0x70, 0x20);
     int TEXT   = rgb_pen(g, 0xFF, 0xFF, 0xFF);
@@ -97,12 +103,24 @@ int main() {
     const char* response_label = "";   // "approved" / "denied" briefly after sending
     uint32_t responded_at_ms = 0;
 
+    // Map session state to PersonaState (sleep/idle/busy/attention/celebrate).
+    auto derive_persona = [](const TamaState& s) -> uint8_t {
+        if (s.promptId[0])          return 3;   // attention
+        if (!s.connected)           return 0;   // sleep
+        if (s.recentlyCompleted)    return 4;   // celebrate
+        if (s.sessionsRunning >= 1) return 2;   // busy
+        return 1;                                // idle
+    };
+
     uint32_t tick = 0;
     while (true) {
         buttonsUpdate();
         powerUpdate();        // long-press RESET → dormant sleep (no return)
         dataPoll(&tama);
         uint32_t now = to_ms_since_boot(get_absolute_time());
+
+        // Cycle through species on Up-button press for quick visual testing.
+        if (btnPressed(Btn::Up)) buddyNextSpecies();
 
         // Reset response latch when the prompt id changes (new prompt arrived,
         // or the old one was cleared by a heartbeat without `prompt`).
@@ -132,6 +150,10 @@ int main() {
         g.set_pen(BG);
         g.clear();
         g.set_font("bitmap8");
+
+        // Draw the ASCII buddy in its stage. buddyTick paints over the stage
+        // background each tick — its background must match ours.
+        buddyTick(derive_persona(tama));
 
         // Title + link/data state along the top. Once the desktop has sent
         // {"cmd":"owner","name":"..."} the title personalises to "<X>'s Buddy".

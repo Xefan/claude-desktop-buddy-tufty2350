@@ -69,11 +69,30 @@ add_executable(claude_buddy
     src/battery.cpp
     src/ble_bridge.cpp
     src/buttons.cpp
+    src/buddy.cpp
     src/data.cpp
     src/power.cpp
     src/rtc.cpp
     src/settings.cpp
     src/drivers/st7789/st7789.cpp
+    src/buddies/axolotl.cpp
+    src/buddies/blob.cpp
+    src/buddies/cactus.cpp
+    src/buddies/capybara.cpp
+    src/buddies/cat.cpp
+    src/buddies/chonk.cpp
+    src/buddies/dragon.cpp
+    src/buddies/duck.cpp
+    src/buddies/ghost.cpp
+    src/buddies/goose.cpp
+    src/buddies/mushroom.cpp
+    src/buddies/octopus.cpp
+    src/buddies/owl.cpp
+    src/buddies/penguin.cpp
+    src/buddies/rabbit.cpp
+    src/buddies/robot.cpp
+    src/buddies/snail.cpp
+    src/buddies/turtle.cpp
 )
 
 # Compile the vendored driver's .pio program into a header.
