@@ -15,4 +15,10 @@ void powerInit();
 // turn off LCD backlight + case LEDs, and enter dormant mode. On wake
 // (any front button), watchdog-reboot back to a clean startup state.
 // Call once per main-loop frame.
+//
+// CAVEAT: Pimoroni wires the RESET button to the RP2350's hardware reset
+// line. A short tap reboots the chip before this code can act. The
+// long-press path may also be intercepted by hardware reset — that's
+// being investigated; if it never fires, we need to detect "RESET held
+// at boot" and enter dormant from there instead of during running.
 void powerUpdate();

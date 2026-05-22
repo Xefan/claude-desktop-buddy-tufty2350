@@ -133,13 +133,56 @@ int main() {
         return 1;                                // idle
     };
 
+    constexpr uint32_t SCREEN_AUTO_OFF_MS = 30000;
+    bool     screen_off          = false;
+    uint32_t last_interaction_ms = to_ms_since_boot(get_absolute_time());
+
     uint32_t tick = 0;
     while (true) {
         buttonsUpdate();
-        menuUpdate();         // hold-A opens menu; consumes Up/Down/A/B while open
-        powerUpdate();        // long-press RESET → dormant sleep (no return)
+        powerUpdate();        // long-press RESET (note: hardware-tied to chip reset)
         dataPoll(&tama);
         uint32_t now = to_ms_since_boot(get_absolute_time());
+        bool any_btn = btnPressed(Btn::A) || btnPressed(Btn::B) || btnPressed(Btn::C)
+                    || btnPressed(Btn::Up) || btnPressed(Btn::Down);
+        // C is the screen-toggle button. RESET can't be used — Pimoroni wires
+        // it to the RP2350's hardware reset line (that's how their BOOTSEL
+        // gesture works), so a tap of RESET reboots the chip unconditionally.
+        bool screen_toggle = btnPressed(Btn::C);
+
+        // ── Screen on/off (manual via C tap + auto-off on battery idle) ──
+        if (screen_off) {
+            // Wake on any input or when a permission prompt arrives.
+            if (any_btn || tama.promptId[0]) {
+                screen_off = false;
+                lcd.set_backlight(BRIGHT_LEVELS[settings().brightness]);
+                last_interaction_ms = now;
+            }
+            sleep_ms(16);
+            tick++;
+            continue;       // skip menu/render entirely while dark
+        }
+        if (screen_toggle) {
+            // User asked to blank the LCD.
+            screen_off = true;
+            lcd.set_backlight(0);
+            sleep_ms(16);
+            tick++;
+            continue;
+        }
+        if (any_btn || tama.promptId[0]) last_interaction_ms = now;
+        // Auto-off: only on battery, and only when nothing's pending. USB
+        // keeps the screen lit so the clock face / status stays visible.
+        if (!batteryOnUsb() && !tama.promptId[0]
+                && (now - last_interaction_ms) > SCREEN_AUTO_OFF_MS) {
+            screen_off = true;
+            lcd.set_backlight(0);
+            sleep_ms(16);
+            tick++;
+            continue;
+        }
+
+        menuUpdate();         // hold-A opens menu; consumes Up/Down/A/B while open
 
         // Apply user-set brightness each frame — cheap PWM register write.
         lcd.set_backlight(BRIGHT_LEVELS[settings().brightness]);
