@@ -56,6 +56,10 @@ void settingsInit() {
         g_settings.led_on      = 1;
         g_settings.defaults_v1 = 0xA5;
     }
+    if (g_settings.defaults_v2 != 0xA5) {
+        g_settings.wake_on_activity = 1;
+        g_settings.defaults_v2      = 0xA5;
+    }
 }
 
 const Settings& settings() { return g_settings; }
@@ -77,6 +81,10 @@ void settingsSetBrightness(uint8_t level) {
 
 void settingsSetLedOn(bool on) {
     g_settings.led_on = on ? 1 : 0;
+}
+
+void settingsSetWakeOnActivity(bool on) {
+    g_settings.wake_on_activity = on ? 1 : 0;
 }
 
 void settingsSave() {

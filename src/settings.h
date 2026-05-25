@@ -14,6 +14,8 @@ struct Settings {
     uint8_t brightness;       // 0..4 — maps to LCD backlight PWM level
     uint8_t led_on;           // 0 or 1 — case-LED attention pulse on prompts
     uint8_t defaults_v1;      // 0xA5 once brightness/led_on have been initialised
+    uint8_t wake_on_activity; // 0 or 1 — auto-turn-on screen when session state changes
+    uint8_t defaults_v2;      // 0xA5 once wake_on_activity has been initialised
     // future fields go here; bump a new defaults_vN sentinel to seed defaults
     // without resetting older preserved fields.
 };
@@ -25,6 +27,7 @@ void settingsSetOwner(const char* name);
 void settingsSetSpeciesIdx(uint8_t idx);
 void settingsSetBrightness(uint8_t level);   // clamps to 0..4
 void settingsSetLedOn(bool on);
+void settingsSetWakeOnActivity(bool on);
 
 // Flush in-RAM settings to flash. Cheap-ish but blocks the core for a few
 // ms (sector erase). Call from main-loop context, not from an IRQ.

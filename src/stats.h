@@ -26,6 +26,12 @@ const Stats& stats();
 // Persist to flash (~10ms, pauses BLE briefly via flash_safe_execute).
 void statsSave();
 
+// Zero all counters (approvals, denials, level, tokens, velocity ring) and
+// persist. Also forces the bridge token sync to re-baseline on the next
+// inbound `tokens` heartbeat so a stale lastBridgeTokens doesn't immediately
+// re-inflate things. Exposed for the settings-menu "Reset stats" item.
+void statsReset();
+
 // Event hooks — bump in-memory counters and persist immediately. Use these
 // from main loop / data parser; safe to call frequently.
 void statsOnApproval(uint32_t seconds_to_respond);

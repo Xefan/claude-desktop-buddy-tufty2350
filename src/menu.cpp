@@ -9,24 +9,28 @@
 #include "buddy.h"
 #include "buttons.h"
 #include "settings.h"
+#include "stats.h"
 
 namespace {
 
 enum Item : uint8_t {
     ITEM_BRIGHTNESS,
-    ITEM_SPECIES,
     ITEM_LED,
+    ITEM_AUTOWAKE,
+    ITEM_RESET_STATS,
     ITEM_CLOSE,
     ITEM_COUNT
 };
 
 constexpr uint32_t HOLD_OPEN_MS = 600;
+constexpr uint32_t RESET_ARM_MS = 3000;   // window between arm-press and confirm-press
 
 bool     menu_open = false;
 bool     ignore_a  = false;     // gate so the hold-to-open release isn't a click
 uint32_t a_press_start = 0;
 uint8_t  selection = 0;
 bool     dirty = false;         // any changes to persist on close
+uint32_t reset_armed_until_ms = 0;   // 0 = unarmed; otherwise expiry timestamp
 
 uint32_t now_ms() {
     return to_ms_since_boot(get_absolute_time());
@@ -39,6 +43,12 @@ void close_menu() {
     }
     menu_open = false;
     selection = 0;
+    reset_armed_until_ms = 0;
+}
+
+bool reset_is_armed(uint32_t now) {
+    return reset_armed_until_ms != 0
+        && (int32_t)(reset_armed_until_ms - now) > 0;
 }
 
 void apply_selected() {
@@ -49,15 +59,24 @@ void apply_selected() {
             dirty = true;
             break;
         }
-        case ITEM_SPECIES: {
-            buddyNextSpecies();
-            settingsSetSpeciesIdx(buddySpeciesIdx());
-            dirty = true;
-            break;
-        }
         case ITEM_LED: {
             settingsSetLedOn(!settings().led_on);
             dirty = true;
+            break;
+        }
+        case ITEM_AUTOWAKE: {
+            settingsSetWakeOnActivity(!settings().wake_on_activity);
+            dirty = true;
+            break;
+        }
+        case ITEM_RESET_STATS: {
+            uint32_t now = now_ms();
+            if (reset_is_armed(now)) {
+                statsReset();
+                reset_armed_until_ms = 0;
+            } else {
+                reset_armed_until_ms = now + RESET_ARM_MS;
+            }
             break;
         }
         case ITEM_CLOSE:
@@ -108,6 +127,11 @@ void menuUpdate() {
         return;
     }
 
+    // Any navigation or B-press disarms a pending reset confirmation.
+    if (btnPressed(Btn::Up) || btnPressed(Btn::Down) || btnPressed(Btn::B)) {
+        reset_armed_until_ms = 0;
+    }
+
     if (btnPressed(Btn::Up))   selection = (selection + ITEM_COUNT - 1) % ITEM_COUNT;
     if (btnPressed(Btn::Down)) selection = (selection + 1) % ITEM_COUNT;
     if (btnPressed(Btn::A))    apply_selected();
@@ -142,7 +166,7 @@ void menuDraw(pimoroni::PicoGraphics& g, int W, int H) {
     g.text("MENU", pimoroni::Point(px + 12, py + 8), PW, 2);
 
     // Items
-    const char* labels[ITEM_COUNT] = { "Brightness", "Species", "LED on prompt", "Close" };
+    const char* labels[ITEM_COUNT] = { "Brightness", "LED on prompt", "Wake on activity", "Reset stats", "Close" };
     int item_y0 = py + 38;
     for (int i = 0; i < ITEM_COUNT; i++) {
         int y = item_y0 + i * 22;
@@ -159,11 +183,14 @@ void menuDraw(pimoroni::PicoGraphics& g, int W, int H) {
                 // Render as a small bar: N filled blocks of 5
                 snprintf(value, sizeof(value), "%d/4", settings().brightness);
                 break;
-            case ITEM_SPECIES:
-                snprintf(value, sizeof(value), "%s", buddySpeciesName());
-                break;
             case ITEM_LED:
                 snprintf(value, sizeof(value), "%s", settings().led_on ? "on" : "off");
+                break;
+            case ITEM_AUTOWAKE:
+                snprintf(value, sizeof(value), "%s", settings().wake_on_activity ? "on" : "off");
+                break;
+            case ITEM_RESET_STATS:
+                if (reset_is_armed(now_ms())) snprintf(value, sizeof(value), "A=confirm");
                 break;
             default: break;
         }

@@ -121,15 +121,29 @@ int main() {
     View view = V_PET;
     uint32_t celebrate_until_ms = 0;   // brief P_CELEBRATE after a level-up
 
+    // Tracks the last time we saw *anything* happen on the link — a running
+    // session, a prompt, a completion. Used to keep the buddy looking idle
+    // (not asleep) through brief heartbeat gaps. Desktop's keepalive can lull
+    // during long generations between tool calls, and we don't want the pet
+    // to flip to sleep persona mid-think.
+    uint32_t last_activity_ms = 0;
+    constexpr uint32_t ACTIVITY_GRACE_MS = 120000;   // 2 minutes
+
     // Map session state + transient overrides to PersonaState.
-    auto derive_persona = [&heart_until_ms, &celebrate_until_ms]
+    auto derive_persona = [&heart_until_ms, &celebrate_until_ms, &last_activity_ms]
                           (const TamaState& s, uint32_t now) -> uint8_t {
         if ((int32_t)(heart_until_ms - now) > 0)     return 6;   // heart
         if ((int32_t)(celebrate_until_ms - now) > 0) return 4;   // celebrate
         if (s.promptId[0])          return 3;   // attention
-        if (!s.connected)           return 0;   // sleep
-        if (s.recentlyCompleted)    return 4;   // celebrate
         if (s.sessionsRunning >= 1) return 2;   // busy
+        if (s.recentlyCompleted)    return 4;   // celebrate
+        // Recent activity holds the pet out of sleep persona even if the
+        // heartbeat link has gone quiet — Desktop's keepalive isn't reliable
+        // during long thinking gaps between tool calls.
+        bool recent = last_activity_ms != 0
+                      && (now - last_activity_ms) < ACTIVITY_GRACE_MS;
+        if (recent)                 return 1;   // idle (recently active)
+        if (!s.connected)           return 0;   // sleep
         return 1;                                // idle
     };
 
@@ -149,6 +163,44 @@ int main() {
         // it to the RP2350's hardware reset line (that's how their BOOTSEL
         // gesture works), so a tap of RESET reboots the chip unconditionally.
         bool screen_toggle = btnPressed(Btn::C);
+
+        // ── Activity detection ──
+        // Compare against previous-frame state to spot edges: a new running
+        // session, a fresh completion, a new prompt id, the link coming back.
+        // Edges count as activity (and optionally as user interactions, gated
+        // by the wake-on-activity setting).
+        static uint8_t prev_running   = 0;
+        static uint8_t prev_waiting   = 0;
+        static bool    prev_completed = false;
+        static bool    prev_connected = false;
+        static char    prev_prompt[40] = "";
+        bool activity = false;
+        if (tama.sessionsRunning > prev_running)             activity = true;
+        if (tama.sessionsWaiting > prev_waiting)             activity = true;
+        if (tama.recentlyCompleted && !prev_completed)       activity = true;
+        if (tama.connected && !prev_connected)               activity = true;
+        if (tama.promptId[0] && std::strcmp(tama.promptId, prev_prompt) != 0)
+                                                              activity = true;
+        prev_running   = tama.sessionsRunning;
+        prev_waiting   = tama.sessionsWaiting;
+        prev_completed = tama.recentlyCompleted;
+        prev_connected = tama.connected;
+        std::strncpy(prev_prompt, tama.promptId, sizeof(prev_prompt) - 1);
+        prev_prompt[sizeof(prev_prompt) - 1] = 0;
+
+        if (activity) {
+            last_activity_ms = now;
+            // Optionally treat as a user interaction → wakes the screen and
+            // resets the idle-auto-off timer. Pending prompts always wake
+            // regardless (handled below) since they need a response.
+            if (settings().wake_on_activity) {
+                last_interaction_ms = now;
+                if (screen_off) {
+                    screen_off = false;
+                    lcd.set_backlight(BRIGHT_LEVELS[settings().brightness]);
+                }
+            }
+        }
 
         // ── Screen on/off (manual via C tap + auto-off on battery idle) ──
         if (screen_off) {
@@ -201,6 +253,10 @@ int main() {
         //   prompt pending → approve
         //   no prompt      → cycle home/pet/info views
         // B is similarly: prompt → deny; otherwise no-op (reserved for sub-page nav).
+        // Up/Down cycle the buddy species when there's no prompt to keep them
+        // from deflecting an approval. Species swap is cosmetic only — stats
+        // are global, the buddy is just a skin change.
+        static uint32_t species_save_at_ms = 0;
         if (!menuIsOpen()) {
             if (tama.promptId[0] && !responded) {
                 const char* decision = nullptr;
@@ -222,9 +278,36 @@ int main() {
                         statsOnDenial();
                     }
                 }
-            } else if (btnPressed(Btn::A)) {
-                view = (View)((view + 1) % V_COUNT);
+            } else {
+                if (btnPressed(Btn::A)) {
+                    view = (View)((view + 1) % V_COUNT);
+                }
+                bool species_changed = false;
+                uint8_t n = buddySpeciesCount();
+                if (n > 0 && btnPressed(Btn::Up)) {
+                    buddySetSpeciesIdx((buddySpeciesIdx() + n - 1) % n);
+                    species_changed = true;
+                }
+                if (n > 0 && btnPressed(Btn::Down)) {
+                    buddySetSpeciesIdx((buddySpeciesIdx() + 1) % n);
+                    species_changed = true;
+                }
+                if (species_changed) {
+                    settingsSetSpeciesIdx(buddySpeciesIdx());
+                    // Debounce flash writes — only persist 1s after the last
+                    // press so paging through species in quick succession
+                    // doesn't churn the settings sector.
+                    species_save_at_ms = now + 1000;
+                    // Clear any persona override so the new buddy doesn't
+                    // start mid-celebrate / mid-heart from the previous one.
+                    heart_until_ms = 0;
+                    celebrate_until_ms = 0;
+                }
             }
+        }
+        if (species_save_at_ms != 0 && (int32_t)(species_save_at_ms - now) <= 0) {
+            settingsSave();
+            species_save_at_ms = 0;
         }
 
         g.set_pen(BG);
@@ -387,7 +470,7 @@ int main() {
 
             char ln[40];
             g.set_pen(TEXT);
-            snprintf(ln, sizeof(ln), "owner   %s", owner[0] ? owner : "-");
+            snprintf(ln, sizeof(ln), "owner   %s", owner[0] ? owner : "<Unknown>");
             g.text(ln, Point(IX, iy), IW, 1); iy += 12;
 
             int mv = batteryMillivolts();
@@ -410,8 +493,9 @@ int main() {
 
             iy += 6;
             g.set_pen(DIM);
-            g.text("A: next view",  Point(IX, iy), IW, 1); iy += 11;
-            g.text("hold A: menu",  Point(IX, iy), IW, 1); iy += 11;
+            g.text("A: next view",      Point(IX, iy), IW, 1); iy += 11;
+            g.text("Up/Dn: change buddy", Point(IX, iy), IW, 1); iy += 11;
+            g.text("hold A: menu",      Point(IX, iy), IW, 1); iy += 11;
         }
 
         // Settings menu draws last so it overlays everything underneath.

@@ -70,6 +70,18 @@ void statsSave() {
     flash_safe_execute(do_save_unsafe, nullptr, UINT32_MAX);
 }
 
+void statsReset() {
+    std::memset(&g_stats, 0, sizeof(g_stats));
+    // Drop the bridge sync state so the next inbound tokens report becomes a
+    // fresh baseline (otherwise lastBridgeTokens would still hold the old
+    // value and we'd immediately credit the difference, undoing the reset).
+    lastBridgeTokens = 0;
+    tokensSynced     = false;
+    levelUpPending   = false;
+    energy_base_ms   = now_ms();
+    statsSave();
+}
+
 void statsOnApproval(uint32_t seconds_to_respond) {
     g_stats.approvals++;
     if (seconds_to_respond > 65535) seconds_to_respond = 65535;
